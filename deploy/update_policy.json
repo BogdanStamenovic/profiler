@@ -1,0 +1,11 @@
+{
+  "automatic_modules": ["application", "python-environment", "systemd"],
+  "environment_key_pattern": "^PROFILER_[A-Z0-9_]+$",
+  "reprocess_modules": {
+    "profiles": {
+      "flag_groups": [
+        ["--mode=sync", "--mode=adopt", "--mode=reseed"]
+      ]
+    }
+  }
+}

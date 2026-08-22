@@ -1,0 +1,32 @@
+[Unit]
+Description=Keep the shared parts of .bashrc and .zshrc identical
+Documentation=https://github.com/BogdanStamenovic/profiler
+After=local-fs.target
+ConditionPathExists=/opt/profiler/.venv/bin/profiler
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/profiler
+EnvironmentFile=/etc/profiler.env
+ExecStart=/opt/profiler/.venv/bin/profiler watch
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+
+PrivateTmp=true
+PrivateNetwork=true
+ProtectSystem=strict
+ProtectHome=false
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER
+ReadWritePaths=/var/lib/profiler /var/backups/profiler /home -/root
+
+[Install]
+WantedBy=multi-user.target

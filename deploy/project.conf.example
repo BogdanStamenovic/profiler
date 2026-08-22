@@ -1,0 +1,14 @@
+# Copy this file to deploy/project.conf and customize every value.
+APP_NAME=profiler
+SERVICE_NAME=profiler.service
+SERVICE_USER=root
+SERVICE_GROUP=root
+INSTALL_DIR=/opt/profiler
+DATA_DIR=/var/lib/profiler
+ENVIRONMENT_FILE=/etc/profiler.env
+SERVICE_SOURCE=deploy/profiler.service
+SERVICE_DESTINATION=/etc/systemd/system/profiler.service
+STATE_FILE=/var/lib/profiler/deployed-revision
+BACKUP_ROOT=/var/backups/profiler
+REPOSITORY_MARKER=pyproject.toml
+VENV_DIR=/opt/profiler/.venv

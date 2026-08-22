@@ -1,0 +1,23 @@
+schema: 1
+name: profiler
+description: Keep the shared parts of ~/.bashrc and ~/.zshrc identical.
+homepage: https://github.com/BogdanStamenovic/profiler
+tags: [shell, bash, zsh, dotfiles, systemd, linux]
+install:
+  platforms: [linux, darwin]
+  setup:
+    linux:
+      - python -m venv .venv
+      - .venv/bin/python -m pip install -e .
+    darwin:
+      - python -m venv .venv
+      - .venv/bin/python -m pip install -e .
+  update:
+    linux: [.venv/bin/python -m pip install -e .]
+    darwin: [.venv/bin/python -m pip install -e .]
+  remove:
+    linux: [.venv/bin/profiler cleanup]
+    darwin: [.venv/bin/profiler cleanup]
+command:
+  linux: .venv/bin/profiler
+  darwin: .venv/bin/profiler

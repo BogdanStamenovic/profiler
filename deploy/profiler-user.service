@@ -1,0 +1,17 @@
+# Optional per-user alternative to the system service. Install it yourself with:
+#   install -Dm644 deploy/profiler-user.service ~/.config/systemd/user/profiler.service
+#   systemctl --user daemon-reload && systemctl --user enable --now profiler.service
+# Auto Update Changer does not manage this unit; it deploys deploy/profiler.service.
+[Unit]
+Description=Keep the shared parts of .bashrc and .zshrc identical (this user only)
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/share/profiler/.venv/bin/profiler watch
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
