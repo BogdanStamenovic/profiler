@@ -20,6 +20,6 @@ install:
       - sudo bash deploy/update.sh
   remove:
     linux:
-      - sudo bash deploy/uninstall.sh
+      - sudo bash deploy/uninstall.sh --purge
 command:
   linux: sudo /opt/profiler/.venv/bin/profiler --env-file /etc/profiler.env
