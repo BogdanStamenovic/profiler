@@ -108,3 +108,34 @@ def test_shell_hooks_are_recognised_by_their_argument(default_rules, line, expec
 def test_a_header_comment_naming_a_profile_stays_put(default_rules):
     assert default_rules.classify("# ~/.bashrc") == rules.NEVER
     assert default_rules.classify("# my aliases") == rules.SHARED
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        'source "$ZPLUG/zsh-defer/zsh-defer.plugin.zsh"',
+        "source /usr/share/fzf/key-bindings.zsh",
+        "source $ZPLUG/fzf-tab/fzf-tab.plugin.zsh",
+        "if [[ ! -s $cache || ${commands[$1]} -nt $cache ]]; then",
+        "if [[ -n $_dump(#qN.mh+24) ]]; then compinit -d $_dump; fi",
+        "{ zcompile -R -- $_dump } &!",
+        "typeset -gA ZSH_HIGHLIGHT_STYLES",
+        "ZSH_AUTOSUGGEST_STRATEGY=(history completion)",
+        'eval "$(pyenv init - zsh)"',
+    ],
+)
+def test_real_world_zsh_machinery_never_reaches_bash(default_rules, line):
+    assert not default_rules.travels_to(line, "bash")
+
+
+@pytest.mark.parametrize(
+    "line",
+    ['eval "$(pyenv init - bash)"', 'eval "$(pyenv init --path bash)"'],
+)
+def test_a_shell_named_after_a_flag_is_still_recognised(default_rules, line):
+    assert default_rules.classify(line) == rules.BASH
+
+
+def test_a_shared_history_file_is_never_mirrored(default_rules):
+    assert default_rules.classify('HISTFILE="$HOME/.cache/zsh/history"') == rules.NEVER
+    assert default_rules.classify("HISTSIZE=500000") == rules.SHARED

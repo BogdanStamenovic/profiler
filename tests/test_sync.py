@@ -4,7 +4,16 @@ import pytest
 from conftest import make_settings
 
 from profiler import block, state
-from profiler.sync import FAILED, Synchronizer, paragraphs, slug, split_changes
+from profiler.sync import (
+    FAILED,
+    KEEP_APART,
+    UNDECIDED,
+    WINNER,
+    Synchronizer,
+    paragraphs,
+    slug,
+    split_changes,
+)
 
 BASHRC = ".bashrc"
 ZSHRC = ".zshrc"
@@ -351,3 +360,156 @@ def test_adopting_a_realistic_bashrc(settings, home):
         "}",
     ]
     assert managed(home, BASHRC) == ["export PAGER=less"]
+
+
+def test_dry_run_reports_a_refusal_instead_of_promising_a_write(settings, home):
+    seed(settings, home, bash=["export EDITOR=nvim"], zsh=["setopt AUTO_CD"])
+    write(home, BASHRC, "export EDITOR=nvim", "if true; then")
+    write(home, ZSHRC, "setopt AUTO_CD", "export PAGER=less")
+    planned = make_settings(settings.state_dir.parent, home, dry_run=True)
+
+    report = Synchronizer(planned).run("sync")
+
+    outcome = next(item for item in report.targets[0].files if item.shell == "bash")
+    assert outcome.action == FAILED
+    assert "syntax error" in outcome.error
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("alias ls='eza --icons'", "alias ls"),
+        ("export EDITOR=nvim", "variable EDITOR"),
+        ("EDITOR=nvim", "variable EDITOR"),
+        ("greet() {", "function greet"),
+        ("function greet() {", "function greet"),
+        ('export PATH="$PATH:/opt/bin"', None),
+        ('PATH="${PATH}:/opt/bin"', None),
+        ("echo hello", None),
+        ("# a comment", None),
+    ],
+)
+def test_defines_names_what_a_line_declares(line, expected):
+    from profiler.sync import defines
+
+    assert defines(line) == expected
+
+
+def test_a_conflicting_alias_is_not_mirrored_over_the_local_one(settings, home):
+    write(home, BASHRC, "alias ls='ls --color=auto'")
+    write(home, ZSHRC, "alias ls='eza --icons'")
+
+    report = Synchronizer(settings).run("adopt")
+
+    assert managed(home, BASHRC) == []
+    assert managed(home, ZSHRC) == []
+    assert "alias ls='ls --color=auto'" in read(home, BASHRC)
+    assert "alias ls='eza --icons'" in read(home, ZSHRC)
+    for outcome in report.targets[0].files:
+        assert outcome.conflicts == ["alias ls"]
+
+
+def test_an_identical_definition_on_both_sides_is_not_a_conflict(settings, home):
+    write(home, BASHRC, "alias ls='ls --color=auto'", "export EDITOR=nvim")
+    write(home, ZSHRC, "alias ls='ls --color=auto'")
+
+    report = Synchronizer(settings).run("adopt")
+
+    assert managed(home, ZSHRC) == ["export EDITOR=nvim"]
+    assert not any(outcome.conflicts for outcome in report.targets[0].files)
+
+
+def test_additive_path_lines_are_not_treated_as_conflicting(settings, home):
+    write(home, BASHRC, 'export PATH="$PATH:/opt/a"')
+    write(home, ZSHRC, 'export PATH="$PATH:/opt/b"')
+
+    report = Synchronizer(settings).run("adopt")
+
+    assert not any(outcome.conflicts for outcome in report.targets[0].files)
+    assert managed(home, ZSHRC) == ['export PATH="$PATH:/opt/a"']
+
+
+def conflicting(home):
+    write(home, BASHRC, "alias ls='ls --color=auto'")
+    write(home, ZSHRC, "alias ls='eza --icons'")
+
+
+def test_a_resolver_is_asked_once_and_its_answer_is_remembered(settings, home):
+    conflicting(home)
+    asked = []
+
+    def resolve(conflict):
+        asked.append(conflict.name)
+        return WINNER, conflict.versions["zsh"]
+
+    Synchronizer(settings, resolver=resolve).run("adopt")
+
+    assert asked == ["alias ls"]
+    assert "alias ls='eza --icons'" in read(home, BASHRC)
+    assert "alias ls='ls --color=auto'" not in read(home, BASHRC)
+
+    write(home, BASHRC, read(home, BASHRC).rstrip("\n"), "alias gs='git status'")
+    Synchronizer(settings, resolver=resolve).run("sync")
+
+    assert asked == ["alias ls"], "a settled name must not be asked about again"
+
+
+def test_keeping_them_apart_stops_the_question_for_good(settings, home):
+    conflicting(home)
+    asked = []
+
+    def resolve(conflict):
+        asked.append(conflict.name)
+        return KEEP_APART, None
+
+    Synchronizer(settings, resolver=resolve).run("adopt")
+
+    assert "alias ls='ls --color=auto'" in read(home, BASHRC)
+    assert "alias ls='eza --icons'" in read(home, ZSHRC)
+    assert managed(home, BASHRC) == []
+
+    Synchronizer(settings, resolver=resolve).run("sync")
+    assert asked == ["alias ls"]
+
+
+def test_skipping_leaves_the_conflict_pending(settings, home):
+    conflicting(home)
+
+    report = Synchronizer(settings, resolver=lambda c: (UNDECIDED, None)).run("adopt")
+
+    assert [conflict.name for conflict in report.targets[0].pending] == ["alias ls"]
+    assert managed(home, BASHRC) == []
+
+
+def test_without_a_resolver_a_conflict_is_reported_not_guessed(settings, home):
+    conflicting(home)
+
+    report = Synchronizer(settings).run("adopt")
+
+    pending = report.targets[0].pending
+    assert [conflict.name for conflict in pending] == ["alias ls"]
+    assert pending[0].versions == {
+        "bash": "alias ls='ls --color=auto'",
+        "zsh": "alias ls='eza --icons'",
+    }
+    assert managed(home, ZSHRC) == []
+
+
+def test_a_decision_survives_a_reload_of_the_state(settings, home):
+    conflicting(home)
+    Synchronizer(settings, resolver=lambda c: (KEEP_APART, None)).run("adopt")
+
+    stored = state.load(settings.state_file)
+
+    assert stored.target(home).decisions == {"alias ls": {"mode": KEEP_APART, "line": None}}
+
+
+def test_the_winning_definition_replaces_the_loser_and_backs_it_up(settings, home):
+    conflicting(home)
+
+    Synchronizer(settings, resolver=lambda c: (WINNER, c.versions["bash"])).run("adopt")
+
+    assert "alias ls='eza --icons'" not in read(home, ZSHRC)
+    assert "alias ls='ls --color=auto'" in read(home, ZSHRC)
+    copies = sorted((settings.backup_dir / slug(home)).glob("*-zsh"))
+    assert copies and "eza" in copies[-1].read_text()

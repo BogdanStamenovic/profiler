@@ -59,10 +59,13 @@ Each value is a Python regular expression, searched against the stripped line.
    standalone statement, one unit per whole construct, so a function crosses over in one piece
    while the statements around it are judged on their own. A unit is appended only if every line
    in it may travel to that shell and the receiving profile does not already contain it.
-5. Check the rewritten text with `bash -n` or `zsh -n`. A result that would not parse is discarded
+5. Hold back anything that would redefine a name the receiving profile already defines under its
+   own authority, and raise it as a conflict instead. See below.
+6. Check the rewritten text with `bash -n` or `zsh -n`. A result that would not parse is discarded
    and reported; the file on disk is not touched and the snapshot does not advance, so the next
-   pass tries again.
-6. Back the file up, replace it atomically, preserving its mode and owner, then record the new
+   pass tries again. `--dry-run` runs this check too, so a preview never promises a write that the
+   real pass would refuse.
+7. Back the file up, replace it atomically, preserving its mode and owner, then record the new
    snapshot. Because the snapshot matches what was just written, nothing bounces back.
 
 A pass over an unrecorded home directory only takes the snapshot. Run `profiler adopt` to treat
@@ -74,3 +77,25 @@ Deleting the whole managed block, markers included, is read as opting that file 
 deleting every mirrored line. Nothing is removed from the other profile, and the next pass starts
 again from what is left. Deleting individual lines from inside an intact block is read as a
 deletion and does reach the other file.
+
+# Conflicting definitions
+
+A line counts as *defining* a name when it is an alias, a plain assignment, or a function header.
+An assignment that reads its own previous value does not count, because `PATH="$PATH:/opt/bin"`
+adds to a name rather than replacing it, and two profiles may both add to it safely.
+
+When arriving content would redefine a name the receiving profile already defines differently,
+profiler stops rather than guessing. Whichever copy landed last would silently win, and that is
+exactly the kind of change nobody notices until a command behaves oddly a week later.
+
+At a terminal it asks which version both files should carry. The answer is stored per home
+directory, keyed by the disputed name, so the question comes up once:
+
+- choosing a version writes it into both files, removing the losing definition from the profile
+  that held it — that file is backed up first, as with any other write;
+- `k` records that the two are meant to differ, and the name is never mirrored again;
+- `s` leaves everything alone and asks again next time.
+
+The service runs with nobody to ask, so it always behaves like `s`: both definitions stay put and
+the conflict is reported. Settle them by running `profiler sync` yourself, or answer them all at
+once with `--on-conflict apart`.

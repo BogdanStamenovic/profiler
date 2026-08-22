@@ -16,7 +16,17 @@ from pathlib import Path
 from profiler import __version__, block, state
 from profiler.config import SHELLS, ConfigError, Settings, load_settings
 from profiler.rules import RulesError
-from profiler.sync import FAILED, SEEDED, UNCHANGED, Synchronizer, slug
+from profiler.sync import (
+    FAILED,
+    KEEP_APART,
+    SEEDED,
+    UNCHANGED,
+    UNDECIDED,
+    WINNER,
+    Conflict,
+    Synchronizer,
+    slug,
+)
 from profiler.watcher import Inotify, InotifyUnavailable
 
 LOG = logging.getLogger("profiler")
@@ -48,6 +58,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-validate",
         action="store_true",
         help="skip the 'bash -n' / 'zsh -n' check on the rewritten profile",
+    )
+    parser.add_argument(
+        "--on-conflict",
+        choices=("ask", "skip", "apart"),
+        default="ask",
+        help="when both profiles define the same name differently: ask (default, needs a "
+        "terminal), skip and report it, or keep each file's own version for good",
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="log at debug level")
     parser.add_argument("-q", "--quiet", action="store_true", help="log warnings and errors only")
@@ -113,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
             return command_restore(settings, arguments)
         if arguments.command == "watch":
             return command_watch(settings)
-        return command_pass(settings, arguments.command)
+        return command_pass(settings, arguments.command, arguments.on_conflict)
     except (ConfigError, RulesError, state.StateError) as exc:
         print(f"profiler: {exc}", file=sys.stderr)
         return 2
@@ -121,8 +138,54 @@ def main(argv: list[str] | None = None) -> int:
         return 130
 
 
-def command_pass(settings: Settings, mode: str) -> int:
-    report = Synchronizer(settings).run(mode)
+def prompt_for_conflict(settings: Settings) -> object:
+    """Ask which version of a contested name both profiles should carry."""
+
+    def ask(conflict: Conflict) -> tuple[str, str | None]:
+        shells = sorted(conflict.versions)
+        print(f"\nBoth profiles in {conflict.home} define {conflict.name}, differently:")
+        for index, shell in enumerate(shells, start=1):
+            print(f"  {index}) {settings.rc_names[shell]}: {conflict.versions[shell].strip()}")
+        print("  k) keep each file's own version, and stop asking about this name")
+        print("  s) skip for now, and ask again next pass")
+        while True:
+            try:
+                answer = input(f"Use which in both? [1-{len(shells)}/k/s] ").strip().lower()
+            except EOFError:
+                print()
+                return UNDECIDED, None
+            if answer.isdigit() and 1 <= int(answer) <= len(shells):
+                return WINNER, conflict.versions[shells[int(answer) - 1]]
+            if answer == "k":
+                return KEEP_APART, None
+            if answer in ("s", ""):
+                return UNDECIDED, None
+            print(f"Please answer 1-{len(shells)}, k or s.")
+
+    return ask
+
+
+def make_resolver(settings: Settings, choice: str) -> object:
+    """A dry run cannot apply an answer, and a non-terminal has nobody to ask."""
+    if choice == "apart":
+        return lambda conflict: (KEEP_APART, None)
+    if choice == "skip" or settings.dry_run or not sys.stdin.isatty():
+        return None
+    return prompt_for_conflict(settings)
+
+
+def report_pending(settings: Settings, target) -> None:
+    print("  conflicting definitions, left as they are:")
+    for conflict in target.pending:
+        print(f"    ! {conflict.name}")
+        for shell, line in sorted(conflict.versions.items()):
+            print(f"        {settings.rc_names[shell]}: {line.strip()}")
+    print("    decide with 'profiler sync' in a terminal, or keep them separate for good")
+    print("    with '--on-conflict apart'.")
+
+
+def command_pass(settings: Settings, mode: str, on_conflict: str = "skip") -> int:
+    report = Synchronizer(settings, resolver=make_resolver(settings, on_conflict)).run(mode)
     prefix = "would " if settings.dry_run else ""
     for target in report.targets:
         print(f"{target.home}")
@@ -136,7 +199,11 @@ def command_pass(settings: Settings, mode: str) -> int:
             if outcome.action == FAILED:
                 print(f"  {name}: failed - {outcome.error}")
                 continue
-            if outcome.action in (UNCHANGED, SEEDED) and not outcome.held_back:
+            if (
+                outcome.action in (UNCHANGED, SEEDED)
+                and not outcome.held_back
+                and not outcome.conflicts
+            ):
                 print(f"  {name}: no change")
                 continue
             print(f"  {name}: {prefix}add {len(outcome.added)}, remove {len(outcome.removed)}")
@@ -146,8 +213,12 @@ def command_pass(settings: Settings, mode: str) -> int:
                 print(f"    - {line.strip()}")
             for line in outcome.held_back:
                 print(f"    ~ held back (shell specific): {line.strip()}")
+            for clash in outcome.conflicts:
+                print(f"    ! held back (conflict): {clash}")
             if outcome.backup:
                 print(f"    backup: {outcome.backup}")
+        if target.pending:
+            report_pending(settings, target)
     return 1 if report.failed else 0
 
 

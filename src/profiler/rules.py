@@ -18,6 +18,8 @@ NEVER_PATTERNS = (
     r"\.(bashrc|zshrc|bash_profile|zprofile|zshenv|zlogin|zlogout|bash_logout)\b",
     r"^(export\s+)?(PS0|PS1|PS2|PS3|PS4|PROMPT|RPROMPT|RPS1|RPS2|PROMPT_COMMAND)=",
     r"^(export\s+)?(SHELL|ZDOTDIR)=",
+    # bash and zsh write incompatible history formats; one shared file corrupts both.
+    r"^(export\s+)?HISTFILE=",
     r"^(precmd|preexec|prompt)\s*\(\)",
     r"^\s*(precmd|preexec)_functions",
 )
@@ -32,7 +34,7 @@ BASH_PATTERNS = (
     r"\bBASH_(SOURCE|VERSION|VERSINFO|REMATCH|COMPLETION[A-Z_]*)\b",
     r"bash[-_]completion",
     r"^\s*[.]\s+/(usr|etc)/share/bash",
-    r"\b(init|hook|shellenv|completion|completions|integration)\s+bash\b",
+    r"\b(init|hook|shellenv|completions?|integration)\b(\s+--?[\w-]+)*\s+-{0,2}\s*bash(?![\w-])",
     r"--shell[= ]bash\b",
 )
 
@@ -52,9 +54,14 @@ ZSH_PATTERNS = (
     r"^(path|fpath|cdpath|manpath|infopath)=\(",
     r"^typeset\s+-U\b",
     r"^alias\s+-[gs]\b",
-    r"\bZSH_(VERSION|NAME|THEME|CUSTOM|CACHE_DIR)\b",
+    r"\bZSH_[A-Z0-9_]+\b",
+    r"\.zsh\b",
+    r"(zsh-defer|fzf-tab|zcompile)\b",
+    r"\$\{commands\[",
+    r"\(#q",
+    r"&!\s*$",
     r"(oh-my-zsh|powerlevel10k|powerlevel9k|\bp10k\b|zsh-syntax-highlighting|zsh-autosuggestions)",
-    r"\b(init|hook|shellenv|completion|completions|integration)\s+zsh\b",
+    r"\b(init|hook|shellenv|completions?|integration)\b(\s+--?[\w-]+)*\s+-{0,2}\s*zsh(?![\w-])",
     r"--shell[= ]zsh\b",
 )
 

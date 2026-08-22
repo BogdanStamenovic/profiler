@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,11 +23,31 @@ LOG = logging.getLogger("profiler.sync")
 MODES = ("sync", "adopt", "reseed", "cleanup")
 SYNTAX_CHECK = {"bash": ("bash", "-n"), "zsh": ("zsh", "-n")}
 
+WINNER = "winner"
+KEEP_APART = "apart"
+UNDECIDED = "skip"
+
 UNCHANGED = "unchanged"
 WRITTEN = "written"
 SEEDED = "seeded"
 FAILED = "failed"
 PLANNED = "planned"
+
+
+@dataclass
+class Conflict:
+    """One name that both profiles define, differently."""
+
+    home: Path
+    name: str
+    versions: dict[str, str]
+
+    def other_than(self, shell: str) -> str:
+        return next(line for other, line in self.versions.items() if other != shell)
+
+
+# Answers a conflict with (WINNER, line), (KEEP_APART, None) or (UNDECIDED, None).
+Resolver = Callable[[Conflict], tuple[str, str | None]]
 
 
 @dataclass
@@ -39,6 +60,7 @@ class FileOutcome:
     added: list[str] = field(default_factory=list)
     removed: list[str] = field(default_factory=list)
     held_back: list[str] = field(default_factory=list)
+    conflicts: list[str] = field(default_factory=list)
     backup: Path | None = None
     error: str = ""
 
@@ -54,6 +76,7 @@ class TargetReport:
     home: Path
     mode: str
     files: list[FileOutcome] = field(default_factory=list)
+    pending: list[Conflict] = field(default_factory=list)
     seeded: bool = False
     error: str = ""
 
@@ -108,6 +131,31 @@ def paragraphs(lines: list[str]) -> list[list[str]]:
     if current:
         groups.append(current)
     return groups
+
+
+ALIAS = re.compile(r"^alias\s+(?:-\w+\s+)?([\w.-]+)=(.*)$")
+ASSIGNMENT = re.compile(
+    r"^(?:export\s+|declare\s+-\w+\s+|typeset\s+-\w+\s+)?([A-Za-z_]\w*)=(?!=)(.*)$"
+)
+FUNCTION = re.compile(r"^(?:function\s+)?([\w.-]+)\s*\(\s*\)")
+
+
+def defines(line: str) -> str | None:
+    """The name a line defines, or None when it defines nothing we can name.
+
+    A definition that reads its own previous value -- PATH="$PATH:..." and friends --
+    adds to a name rather than replacing it, so it is deliberately not a definition.
+    """
+    text = line.strip()
+    for kind, pattern in (("alias", ALIAS), ("variable", ASSIGNMENT)):
+        match = pattern.match(text)
+        if match:
+            name, value = match.group(1), match.group(2)
+            if re.search(rf"\$\{{?{re.escape(name)}\b", value):
+                return None
+            return f"{kind} {name}"
+    match = FUNCTION.match(text)
+    return f"function {match.group(1)}" if match else None
 
 
 # Shell words that open and close a multi-line construct when they start a clause.
@@ -175,9 +223,17 @@ def segments(lines: list[str]) -> list[list[str]]:
 class Synchronizer:
     """Applies one synchronization mode across the configured home directories."""
 
-    def __init__(self, settings: Settings, rules: Rules | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        rules: Rules | None = None,
+        resolver: Resolver | None = None,
+    ) -> None:
         self.settings = settings
         self.rules = rules if rules is not None else load_rules(settings.rules_file)
+        # Without a resolver a conflict is reported and left alone. The service never has
+        # one; only an interactive command can answer for the person whose files these are.
+        self.resolver = resolver
         self._reported_errors: dict[tuple[str, str], str] = {}
 
     def run(self, mode: str = "sync") -> SyncReport:
@@ -245,6 +301,11 @@ class Synchronizer:
             dropped[shell] = own_removed + block_removed
             recalled[shell] = block_removed
 
+        target = stored.target(home)
+        decisions = dict(target.decisions) if target else {}
+        report.pending = self._decide(self._find_conflicts(home, current, authored), decisions)
+        suppress, replace = self._instructions(decisions, report.pending)
+
         written: dict[str, Profile] = {}
         for shell in SHELLS:
             outcome, profile = self._apply(
@@ -254,13 +315,71 @@ class Synchronizer:
                 authored[OTHER[shell]],
                 dropped[OTHER[shell]],
                 recalled[OTHER[shell]],
+                suppress[shell],
+                replace[shell],
             )
             report.files.append(outcome)
             written[shell] = profile if outcome.action != FAILED else previous[shell]
 
         if not self.settings.dry_run and not report.failed:
-            stored.record(home, written)
+            stored.record(home, written, decisions)
         return report
+
+    # -- conflicting definitions -------------------------------------------
+
+    def _find_conflicts(
+        self, home: Path, current: dict[str, Profile], authored: dict[str, list[list[str]]]
+    ) -> list[Conflict]:
+        """Names that arriving content would redefine out from under a profile."""
+        found: dict[str, dict[str, str]] = {}
+        for shell in SHELLS:
+            established = {
+                name: line for line in current[shell].own if (name := defines(line)) is not None
+            }
+            for group in authored[OTHER[shell]]:
+                for line in group:
+                    name = defines(line)
+                    if name is None or name not in established:
+                        continue
+                    if established[name] == line:
+                        continue
+                    found.setdefault(name, {})[shell] = established[name]
+                    found[name][OTHER[shell]] = line
+        return [Conflict(home, name, versions) for name, versions in sorted(found.items())]
+
+    def _decide(self, conflicts: list[Conflict], decisions: dict[str, dict]) -> list[Conflict]:
+        """Settle what can be settled, returning the conflicts still waiting on an answer."""
+        pending: list[Conflict] = []
+        for conflict in conflicts:
+            if conflict.name in decisions:
+                continue
+            if self.resolver is None or self.settings.dry_run:
+                pending.append(conflict)
+                continue
+            mode, line = self.resolver(conflict)
+            if mode == UNDECIDED:
+                pending.append(conflict)
+                continue
+            decisions[conflict.name] = {"mode": mode, "line": line}
+        return pending
+
+    @staticmethod
+    def _instructions(
+        decisions: dict[str, dict], pending: list[Conflict]
+    ) -> tuple[dict[str, set[str]], dict[str, dict[str, str]]]:
+        """Turn settled and unsettled conflicts into per-profile marching orders."""
+        suppress = {shell: set() for shell in SHELLS}
+        replace: dict[str, dict[str, str]] = {shell: {} for shell in SHELLS}
+        for name, decision in decisions.items():
+            for shell in SHELLS:
+                if decision.get("mode") == KEEP_APART:
+                    suppress[shell].add(name)
+                elif decision.get("line"):
+                    replace[shell][name] = decision["line"]
+        for conflict in pending:
+            for shell in SHELLS:
+                suppress[shell].add(conflict.name)
+        return suppress, replace
 
     @staticmethod
     def _block_changes(previous: Profile, current: Profile) -> tuple[list[list[str]], list[str]]:
@@ -293,6 +412,8 @@ class Synchronizer:
         incoming: list[list[str]],
         removals: list[str],
         recalls: list[str],
+        suppress: set[str],
+        replace: dict[str, str],
     ) -> tuple[FileOutcome, Profile]:
         path = self.settings.rc_path(home, shell)
         outcome = FileOutcome(shell=shell, path=path)
@@ -303,15 +424,25 @@ class Synchronizer:
         if drop:
             outcome.removed = [line for line in managed if line in drop]
             managed = [line for line in managed if line not in drop]
-        recall = {line for line in recalls if line.strip()}
+        # A settled conflict evicts this profile's own losing definition so the agreed one
+        # can take its place; the copy in the backup is the way back.
+        losing = {
+            line
+            for line in [*before, *after]
+            if (name := defines(line)) in replace and replace[name] != line
+        }
+        recall = {line for line in recalls if line.strip()} | losing
         if recall:
             outcome.removed += [line for line in [*before, *after] if line in recall]
             before = [line for line in before if line not in recall]
             after = [line for line in after if line not in recall]
 
         present = {line for line in [*managed, *before, *after] if line.strip()}
+        established = {
+            name: line for line in [*before, *after] if (name := defines(line)) is not None
+        }
         for group in incoming:
-            for part in self._admissible(group, shell, outcome):
+            for part in self._admissible(group, shell, outcome, established, suppress, present):
                 body = [line for line in part if line.strip()]
                 if not body or all(line in present for line in body):
                     continue
@@ -342,19 +473,52 @@ class Synchronizer:
         self._commit(home, shell, path, text, outcome)
         return outcome, block.parse(text) if outcome.action != FAILED else current
 
-    def _admissible(self, group: list[str], shell: str, outcome: FileOutcome) -> list[list[str]]:
-        """Split a paragraph into the parts that may travel, recording what stayed behind."""
+    def _admissible(
+        self,
+        group: list[str],
+        shell: str,
+        outcome: FileOutcome,
+        established: dict[str, str],
+        suppress: set[str],
+        present: set[str],
+    ) -> list[list[str]]:
+        """Split a paragraph into the units that may travel, recording what stayed behind."""
         body = [line for line in group if line.strip()]
         if not body:
             return []
-        blocked = [line for line in body if not self.rules.travels_to(line, shell)]
-        if not blocked:
+
+        def refused(line: str) -> bool:
+            return not self.rules.travels_to(line, shell)
+
+        def contested(line: str) -> str | None:
+            name = defines(line)
+            if name is None:
+                return None
+            if name in suppress:
+                return name
+            if name in established and established[name] != line:
+                return name
+            return None
+
+        def duplicate(line: str) -> bool:
+            # Only definitions, so that a bare '}' shared with some other construct does
+            # not count as a reason to take this paragraph apart.
+            return defines(line) is not None and line in present
+
+        # Left whole unless something in it has to be judged separately: cutting a paragraph
+        # up needlessly would lose the blank lines its author put inside a construct.
+        if not any(refused(line) or contested(line) or duplicate(line) for line in body):
             return [group]
+
         allowed: list[list[str]] = []
         for unit in segments(body):
-            refused = [line for line in unit if not self.rules.travels_to(line, shell)]
-            if refused:
-                outcome.held_back.append(refused[0])
+            blocked = next((line for line in unit if refused(line)), None)
+            if blocked is not None:
+                outcome.held_back.append(blocked)
+                continue
+            clash = next((name for line in unit if (name := contested(line))), None)
+            if clash is not None:
+                outcome.conflicts.append(clash)
                 continue
             allowed.append(unit)
         return allowed
@@ -370,14 +534,16 @@ class Synchronizer:
         return outcome
 
     def _commit(self, home: Path, shell: str, path: Path, text: str, outcome: FileOutcome) -> None:
-        if self.settings.dry_run:
-            outcome.action = PLANNED
-            return
         error = self._check_syntax(shell, path, text)
         if error:
             outcome.action = FAILED
             outcome.error = error
             self._log_once(home, shell, f"refusing to write {path}: {error}")
+            return
+        # Checked before this point on purpose: a dry run that skipped the check would
+        # promise writes that the real pass then refuses.
+        if self.settings.dry_run:
+            outcome.action = PLANNED
             return
         try:
             if path.exists():

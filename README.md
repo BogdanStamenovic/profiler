@@ -37,6 +37,24 @@ line, and the statements around it are judged on their own.
 Deleting the whole managed block, markers included, opts that file out instead of deleting the
 originals from the other one.
 
+When both files already define the same name differently — say `alias ls` is `ls --color=auto` in
+one and `eza --icons` in the other — profiler will not pick a winner for you. In a terminal it
+asks:
+
+```text
+Both profiles in /home/you define alias ls, differently:
+  1) .bashrc: alias ls='ls --color=auto'
+  2) .zshrc: alias ls='eza --icons'
+  k) keep each file's own version, and stop asking about this name
+  s) skip for now, and ask again next pass
+Use which in both? [1-2/k/s]
+```
+
+The answer is remembered, so it is asked once and not on every pass. The service never asks: with
+nobody at a terminal it leaves both definitions alone and reports them, and you settle them the
+next time you run `profiler sync` yourself. `--on-conflict apart` answers `k` for everything, and
+`--on-conflict skip` only ever reports.
+
 The first pass on a new machine only records a snapshot. Run `profiler adopt` once when you want
 the content the two files already hold to be merged.
 
@@ -130,8 +148,12 @@ profiler restore      # put a backed-up profile back in place
 profiler cleanup      # remove every managed block and forget the stored state
 ```
 
-`--dry-run` reports what a pass would do without touching a file. `--home` overrides the configured
-directories, and `--env-file` reads settings from a file instead of the environment.
+`--dry-run` reports what a pass would do without touching a file, including anything it would
+refuse to write. `--home` overrides the configured directories, `--env-file` reads settings from a
+file instead of the environment, and `--on-conflict` chooses how contested definitions are handled.
+
+Start with `--dry-run` on a real home before the first `adopt`. A long-standing configuration can
+have more in it than you expect, and the dry run is the cheap way to find out.
 
 ## Settings
 

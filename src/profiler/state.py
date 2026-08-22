@@ -25,6 +25,9 @@ class TargetState:
 
     shells: dict[str, Profile] = field(default_factory=dict)
     updated: str = ""
+    # Settled answers to conflicting definitions, keyed by the name in dispute, so a
+    # question is asked once rather than on every pass.
+    decisions: dict[str, dict] = field(default_factory=dict)
 
     def snapshot(self, shell: str) -> Profile | None:
         return self.shells.get(shell)
@@ -39,10 +42,16 @@ class State:
     def target(self, home: Path) -> TargetState | None:
         return self.targets.get(str(home))
 
-    def record(self, home: Path, shells: dict[str, Profile]) -> None:
+    def record(
+        self, home: Path, shells: dict[str, Profile], decisions: dict[str, dict] | None = None
+    ) -> None:
+        previous = self.targets.get(str(home))
         self.targets[str(home)] = TargetState(
             shells=dict(shells),
             updated=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            decisions=dict(
+                decisions if decisions is not None else (previous.decisions if previous else {})
+            ),
         )
 
     def forget(self, home: Path) -> None:
@@ -86,7 +95,14 @@ def load(path: Path) -> State:
             for shell in SHELLS
             if shell in (entry.get("shells") or {})
         }
-        targets[home] = TargetState(shells=shells, updated=str(entry.get("updated", "")))
+        raw = entry.get("decisions") or {}
+        if not isinstance(raw, dict):
+            raise StateError(f"{path}: decisions for {home} must be an object")
+        targets[home] = TargetState(
+            shells=shells,
+            updated=str(entry.get("updated", "")),
+            decisions={str(name): dict(value) for name, value in raw.items()},
+        )
     return State(targets=targets)
 
 
@@ -97,6 +113,7 @@ def save(path: Path, state: State) -> None:
         "targets": {
             home: {
                 "updated": target.updated,
+                "decisions": target.decisions,
                 "shells": {
                     shell: {
                         "exists": profile.exists,
