@@ -70,6 +70,10 @@ sudoedit /etc/profiler.env      # set PROFILER_HOMES=/home/youruser
 sudo systemctl start profiler.service
 ```
 
+Install from a clean checkout. The installer copies the working tree into `/opt/profiler` before
+building its own virtual environment, so a `.venv/` left over from development would be copied
+along with it.
+
 The service runs as root so it can maintain profiles for several accounts at once, and it watches
 with inotify, falling back to polling where inotify is unavailable. `systemctl reload
 profiler.service` forces a pass without a restart.
