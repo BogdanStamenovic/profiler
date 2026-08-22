@@ -20,4 +20,4 @@ jobs:
       - run: ruff check .
       - run: ruff format --check .
       - run: pytest
-      - run: bash -n deploy/install.sh deploy/update.sh deploy/modules.sh
+      - run: bash -n deploy/*.sh

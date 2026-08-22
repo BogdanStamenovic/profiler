@@ -3,21 +3,23 @@ name: profiler
 description: Keep the shared parts of ~/.bashrc and ~/.zshrc identical.
 homepage: https://github.com/BogdanStamenovic/profiler
 tags: [shell, bash, zsh, dotfiles, systemd, linux]
+
+# Profiler is an Auto Update Changer deployment, so Ownbox drives the same deploy/
+# scripts the manual path uses rather than building a second, parallel installation.
+# Every one of them needs root, and so does the deployed CLI: the service runs as root
+# and its state under /var/lib/profiler is readable only by root.
+# The paths below must match deploy/project.conf; tests/test_deployment.py checks that.
 install:
-  platforms: [linux, darwin]
+  platforms: [linux]
   setup:
     linux:
-      - python -m venv .venv
-      - .venv/bin/python -m pip install -e .
-    darwin:
-      - python -m venv .venv
-      - .venv/bin/python -m pip install -e .
+      - sudo bash deploy/install.sh
+      - sudo bash deploy/configure.sh
   update:
-    linux: [.venv/bin/python -m pip install -e .]
-    darwin: [.venv/bin/python -m pip install -e .]
+    linux:
+      - sudo bash deploy/update.sh
   remove:
-    linux: [.venv/bin/profiler cleanup]
-    darwin: [.venv/bin/profiler cleanup]
+    linux:
+      - sudo bash deploy/uninstall.sh
 command:
-  linux: .venv/bin/profiler
-  darwin: .venv/bin/profiler
+  linux: sudo /opt/profiler/.venv/bin/profiler --env-file /etc/profiler.env

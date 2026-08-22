@@ -40,52 +40,82 @@ originals from the other one.
 The first pass on a new machine only records a snapshot. Run `profiler adopt` once when you want
 the content the two files already hold to be merged.
 
-## Install as an Ownbox tool
+## Install
+
+Profiler is an Auto Update Changer deployment: the service runs as root out of `/opt/profiler`,
+configured by `/etc/profiler.env`, with its state under `/var/lib/profiler`. There is one
+installation, reachable two ways.
+
+Through Ownbox:
 
 ```bash
 ownbox sync
 ownbox install profiler
-profiler adopt
-profiler watch
 ```
 
-For a login-scoped daemon instead of the system service, install the optional user unit:
+Ownbox clones the repository and runs the same `deploy/` scripts the manual path uses, so it
+produces the same deployment rather than a second private one. `deploy/install.sh` builds
+`/opt/profiler`, then `deploy/configure.sh` seeds `/etc/profiler.env` with your home directory and
+starts the service. Both need root, so expect a sudo prompt.
 
-```bash
-install -Dm644 deploy/profiler-user.service ~/.config/systemd/user/profiler.service
-systemctl --user daemon-reload
-systemctl --user enable --now profiler.service
-```
-
-Ownbox reserves `update`, `rollback`, `uninstall`, `remove`, `info` and `where` for its own
-launcher, so Profiler uses none of those names. Everything below passes straight through.
-
-## Install as a system service
+Or directly:
 
 ```bash
 git clone https://github.com/BogdanStamenovic/profiler.git
 cd profiler
 sudo bash deploy/install.sh
-sudoedit /etc/profiler.env      # set PROFILER_HOMES=/home/youruser
-sudo systemctl start profiler.service
+sudo bash deploy/configure.sh
 ```
 
-Install from a clean checkout. The installer copies the working tree into `/opt/profiler` before
-building its own virtual environment, so a `.venv/` left over from development would be copied
-along with it.
+Install from a clean checkout. `deploy/install.sh` copies the working tree into `/opt/profiler`
+before building its own virtual environment, so a `.venv/` left over from development would be
+copied along with it. Ownbox always clones fresh.
 
-The service runs as root so it can maintain profiles for several accounts at once, and it watches
-with inotify, falling back to polling where inotify is unavailable. `systemctl reload
-profiler.service` forces a pass without a restart.
-
-Remote updates go through Auto Update Changer:
+Either way, finish by merging what the two profiles already hold:
 
 ```bash
-sudo bash deploy/update.sh --plan-only
-sudo bash deploy/update.sh
+sudo profiler adopt
 ```
 
-See [the commit syntax](docs/COMMIT_FORMAT.md) for the directives the updater accepts.
+The service runs as root so it can maintain profiles for several accounts at once — add them to
+`PROFILER_HOMES` — and it watches with inotify, falling back to polling where inotify is
+unavailable. `systemctl reload profiler.service` forces a pass without a restart.
+
+### Updating and removing
+
+```bash
+ownbox update profiler          # runs deploy/update.sh
+ownbox uninstall profiler       # runs deploy/uninstall.sh
+```
+
+Or `sudo bash deploy/update.sh`, with `--plan-only` first to see the plan. The updater performs its
+own fetch and fast-forward, requires a clean checkout, backs up state and the environment file, and
+restarts the service. See [the commit syntax](docs/COMMIT_FORMAT.md) for the directives it accepts.
+
+`deploy/uninstall.sh` takes the managed blocks back out of every profile it maintains, then removes
+the unit and `/opt/profiler`. State, backups and `/etc/profiler.env` survive unless you pass
+`--purge`; `--keep-blocks` leaves the mirrored content in place.
+
+Do not use `ownbox rollback` here. It resets the checkout and then re-runs the update commands,
+which would deploy forward again. Auto Update Changer keeps its own history, so go back with:
+
+```bash
+sudo bash deploy/update.sh --target REVISION
+```
+
+### Running it for one account only
+
+To skip the system service, install into a virtual environment of your own and use the optional
+user unit in [deploy/profiler-user.service](deploy/profiler-user.service). That instance keeps its
+state in `~/.local/state/profiler` and needs no root at all.
+
+### A note on command names
+
+Ownbox reserves `update`, `rollback`, `uninstall`, `remove`, `info` and `where` for its own
+launcher, so Profiler's CLI uses none of those names. Everything else passes straight through.
+Because the deployment is root-owned, the launcher Ownbox puts on your PATH runs the deployed
+binary under `sudo` with `--env-file /etc/profiler.env`, so `profiler status` reports on the
+running service rather than on a private copy of the state.
 
 ## Use
 

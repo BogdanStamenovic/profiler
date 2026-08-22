@@ -1,7 +1,11 @@
-# Optional per-user alternative to the system service. Install it yourself with:
+# Optional per-user alternative to the root service. Nothing installs this for you:
+#   python -m venv ~/.local/share/profiler/.venv
+#   ~/.local/share/profiler/.venv/bin/pip install /path/to/this/checkout
 #   install -Dm644 deploy/profiler-user.service ~/.config/systemd/user/profiler.service
 #   systemctl --user daemon-reload && systemctl --user enable --now profiler.service
-# Auto Update Changer does not manage this unit; it deploys deploy/profiler.service.
+# Adjust ExecStart if the virtual environment lives somewhere else. This instance keeps its
+# state in ~/.local/state/profiler. Auto Update Changer does not manage this unit; it deploys
+# deploy/profiler.service, and Ownbox installs that one.
 [Unit]
 Description=Keep the shared parts of .bashrc and .zshrc identical (this user only)
 After=default.target
