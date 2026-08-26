@@ -73,6 +73,30 @@ def test_the_unit_may_write_the_directories_it_needs(unit, project):
     assert "ProtectHome=false" in unit, "the service edits files inside home directories"
 
 
+def test_the_installer_creates_the_directories_the_unit_must_write(unit, project):
+    """A mandatory ReadWritePaths entry that no script creates fails at NAMESPACE setup.
+
+    Only a leading "-" makes an entry optional, and only paths named in project.conf are
+    the deployment's to create; the rest, like /home, are expected to exist already.
+    """
+    creates = " ".join(
+        row for row in (DEPLOY / "install.sh").read_text().splitlines() if "install -d" in row
+    )
+    owned = {value: key for key, value in project.items()}
+    line = next(row for row in unit.splitlines() if row.startswith("ReadWritePaths="))
+
+    for entry in line.split("=", 1)[1].split():
+        if entry.startswith("-"):
+            continue
+        key = owned.get(entry)
+        if key is None:
+            continue
+        assert f"${{{key}}}" in creates, (
+            f"{entry} is a mandatory ReadWritePaths entry the installer never creates; "
+            "the service would fail with status=226/NAMESPACE until something else made it"
+        )
+
+
 def test_the_service_name_matches_where_the_unit_is_installed(project):
     assert Path(project["SERVICE_DESTINATION"]).name == project["SERVICE_NAME"]
     assert project["SERVICE_SOURCE"] == "deploy/profiler.service"
